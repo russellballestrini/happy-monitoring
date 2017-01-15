@@ -1,3 +1,5 @@
+from os import environ
+
 from argparse import ArgumentParser
 
 from pkg_resources import iter_entry_points
@@ -9,7 +11,7 @@ from .context import (
   NotifierContext,
 )
 
-from twisted.internet import reactor
+import asyncio
 
 def load_entry_points(group_name):
     """Return a dictionary of entry_points related to given group_name"""
@@ -25,7 +27,7 @@ def main():
     """main cli console script entry point."""
     parser = ArgumentParser(description="don't worry, be happy, mon!")
     parser.add_argument('-l', '--list-plugins', action='store_true', default=False)
-    parser.add_argument('-c', '--config', default=None, metavar='/path/to/config.yml')
+    parser.add_argument('-c', '--config', default=environ.get('HAPPYMON_CONFIG', None), metavar='/path/to/config.yml')
     args = parser.parse_args()
 
     # load and register collectors and handlers.
@@ -43,6 +45,9 @@ def main():
     if args.config is None:
         parser.print_help()
         exit()
+
+    # get the asyncio event loop.
+    loop = asyncio.get_event_loop()
 
     # load config dictionary and defaults from file path.
     config = get_config(args.config)
@@ -68,14 +73,15 @@ def main():
     for check_name, params in config.get('checks', {}).items():
 
         # create a new check context object.
-        check = CheckContext(check_name)
+        check = CheckContext(check_name, loop)
 
-        # attach functions to context object.
-        check.collector      = collectors[params['collector']]
-        check.handler        = handlers[params['handler']]
-        check.error_handler  = error_handlers[params['handler']]
+        # attach collector coroutines to the context object.
+        check.collector = collectors[params['collector']]
 
-        # attach zero or many notifiers to check.
+        # attach handler functions to the context object.
+        check.handler = handlers[params['handler']]
+
+        # attach zero or many notifier functions to context object.
         for notifier_name in params.get('notifiers', []):
             check.notifiers.append(notifier_registry[notifier_name])
 
@@ -87,14 +93,13 @@ def main():
         # extra parameters specific to this collector / handler.
         check.extra = params.get('extra', {})
 
-        # finally call collector who does work and registers with reactor.
-        # a collector must take the check context as first argument.
-        # we expect collector functions behave asynchronously.
-        check.collector(check)
+        # finally register the check's collector with the event loop.
+        check.house_keeping()
 
     # enter main reactor loop which never ends.
     # this starts the chain reaction.
-    reactor.run()
+    loop.run_forever()
+
 
 if __name__ == '__main__':
     main()
